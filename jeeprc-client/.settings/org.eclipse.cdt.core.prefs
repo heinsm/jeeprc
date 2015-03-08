@@ -1,0 +1,6 @@
+eclipse.preferences.version=1
+environment/project/cdt.managedbuild.config.gnu.exe.debug.1560038920/PATH/delimiter=\:
+environment/project/cdt.managedbuild.config.gnu.exe.debug.1560038920/PATH/operation=replace
+environment/project/cdt.managedbuild.config.gnu.exe.debug.1560038920/PATH/value=/opt/raspberrypi/tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian/bin\:/usr/lib/lightdm/lightdm\:/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/usr/games
+environment/project/cdt.managedbuild.config.gnu.exe.debug.1560038920/append=true
+environment/project/cdt.managedbuild.config.gnu.exe.debug.1560038920/appendContributed=true

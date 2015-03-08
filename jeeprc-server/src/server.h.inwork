@@ -1,0 +1,37 @@
+#ifndef SERVER_H_
+#define SERVER_H_
+
+#include "multiqueue.h"
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <stdbool.h>
+
+#define SERVER_PARMS_INITIALIZER   { { AF_INET, 0, 40713 }, NULL, NULL, NULL }
+
+typedef struct
+{
+    int             fd;
+    multiqueue_t    tx_q;
+    int             version;
+} client_state_t;
+
+typedef struct
+{
+    struct sockaddr_in      sin;
+    int                     (*do_read)(client_state_t*);
+    int                     (*do_write)(client_state_t*);
+    void*                   pserver;
+} server_parms_t;
+
+int server_init(server_parms_t* pparms);
+int server_fini(server_parms_t* pparms);
+
+/*
+ * Helper function to initialize a server_parms_t struct
+ * Is same as using MULTIQUEUE_INITIALIZER to initialize static vars.
+ */
+int server_serverparms_init(server_parms_t* pparms);
+
+#endif

@@ -1,0 +1,234 @@
+
+#include "server.h"
+#include "util.h"
+
+#include <assert.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
+#include <stdarg.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/select.h>
+#include <stdbool.h>
+
+#define STDPRINT_NAME                       __FILE__ ":"
+#define GET_SERVER(x)                       ((server_t*)x->pserver)
+#define MAX_TX_SIZE                         16384
+
+typedef struct
+{
+    pthread_t               tid_server;
+    volatile bool           shutdown;
+    client_state_t*         client_state[FD_SETSIZE];
+    pthread_mutex_t         client_state_mutex;
+} server_t;
+
+static client_state_t* alloc_client_state(void)
+{
+    client_state_t* state = (client_state_t*) malloc(sizeof(client_state_t));
+    if (!state)
+    {
+        return NULL;
+    }
+
+    multiqueue_queue_init(&state->tx_q);
+    //state->tx_q.
+
+    return state;
+}
+
+static void free_fd_state(client_state_t* state)
+{
+    free(state);
+}
+
+void make_nonblocking(int fd)
+{
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+}
+
+static void* server_socket_handler(void* pa)
+{
+    server_parms_t*         parms;
+    server_t*               pserver;
+    int                     listener;
+    int                     i, maxfd;
+    fd_set                  readset, writeset, exset;
+    int                     fdcount=0;
+
+    parms = (server_parms_t*) pa;
+    pserver = GET_SERVER(parms);
+
+    for (i = 0; i < FD_SETSIZE; ++i)
+    {
+        pserver->client_state[i] = NULL;
+    }
+
+    listener = socket(AF_INET, SOCK_STREAM, 0);
+    make_nonblocking(listener);
+
+    int one = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    if (bind(listener, (struct sockaddr*) &parms->sin, sizeof(parms->sin)) < 0)
+    {
+        print_stdout(STDPRINT_NAME "could not bind\n");
+        pserver->shutdown = true;
+    }
+
+    if (listen(listener, 16) < 0)
+    {
+        print_stdout(STDPRINT_NAME "could not listen to server socket\n");
+        pserver->shutdown = true;
+    }
+
+    FD_ZERO(&readset);
+    FD_ZERO(&writeset);
+    FD_ZERO(&exset);
+
+    while (!pserver->shutdown)
+    {
+        maxfd = listener;
+
+        FD_ZERO(&readset);
+        FD_ZERO(&writeset);
+        FD_ZERO(&exset);
+
+        FD_SET(listener, &readset);
+
+        pthread_mutex_lock( &pserver->client_state_mutex );
+        for (i = 0; i < FD_SETSIZE; ++i)
+        {
+            if (pserver->client_state[i] != NULL)
+            {
+                if (pserver->client_state[i]->fd > maxfd)
+                    maxfd = pserver->client_state[i]->fd;
+                FD_SET(pserver->client_state[i]->fd, &readset);
+                if (pserver->client_state[i]->writing)
+                {
+                    FD_SET(pserver->client_state[i]->fd, &writeset);
+                }
+            }
+        }
+        pthread_mutex_unlock( &pserver->client_state_mutex );
+        struct timeval tv = {1, 50000};   // sleep for 100 ms
+        int rc = select(maxfd + 1, &readset, &writeset, &exset, &tv);
+
+        switch (rc)
+        {
+            case -1:
+            {
+                if (errno != EINTR)
+                {
+                    print_stdout(STDPRINT_NAME "listener select failed\n");
+                    pserver->shutdown = true;
+                }
+                break;
+            }
+
+            case 0:
+            {
+                break;
+            }
+
+            default:
+            {
+                if (FD_ISSET(listener, &readset))
+                {
+                    struct sockaddr_storage ss;
+                    socklen_t slen = sizeof(ss);
+                    int fd = accept(listener, (struct sockaddr*) &ss, &slen);
+                    if (fd < 0)
+                    {
+                        perror("accept");
+                    }
+                    else if (fd > FD_SETSIZE)
+                    {
+                        close(fd);
+                    }
+                    else
+                    {
+                        make_nonblocking(fd);
+                        pserver->client_state[fdcount] = alloc_client_state();
+                        pserver->client_state[fdcount]->fd = fd;
+                        assert(pserver->client_state[fdcount]);
+                        fdcount++;
+                    }
+                }
+
+                for (i = 0; i < fdcount; ++i)
+                {
+                    int r = 0;
+
+                    if (pserver->client_state[i] == NULL)
+                    {
+                        continue;
+                    }
+
+                    if (FD_ISSET(pserver->client_state[i]->fd, &readset))
+                    {
+                        if (parms->do_read != NULL)
+                        {
+                            r = parms->do_read(pserver->client_state[i]);
+                        }
+                    }
+
+                    if (r == 0 && FD_ISSET(pserver->client_state[i]->fd, &writeset))
+                    {
+                        if (parms->do_write != NULL)
+                        {
+                            r = parms->do_write(pserver->client_state[i]);
+                        }
+                    }
+
+                    if (r)
+                    {
+                        free_fd_state(pserver->client_state[i]);
+                        pserver->client_state[i] = NULL;
+                        close(i);
+                    }
+                }
+            }
+
+            break;
+        }
+    }
+
+    return NULL;
+}
+
+int server_init(server_parms_t* pparms)
+{
+    pthread_create( &GET_SERVER(pparms)->tid_server, NULL, server_socket_handler, pparms );
+
+    return EOK;
+}
+
+int server_fini(server_parms_t* pparms)
+{
+    GET_SERVER(pparms)->shutdown = true;
+    pthread_join( GET_SERVER(pparms)->tid_server, NULL );
+
+    return EOK;
+}
+
+int server_serverparms_init(server_parms_t* pparms)
+{
+    server_parms_t pparms_master = SERVER_PARMS_INITIALIZER;
+
+    memcpy(pparms, &pparms_master, sizeof(pparms_master));
+
+    return EOK;
+
+
+}
+
+
+int main(int c, char **v)
+{
+    return 0;
+}
+
